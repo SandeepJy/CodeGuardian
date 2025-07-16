@@ -12,7 +12,8 @@ GREEN='\033[0;32m'
 NC='\033[0m'
 
 # Configuration
-DANGER_DIR="./.danger/scripts/"
+DANGER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 BASE_BRANCH="${1:-main}"
 
 echo -e "${BLUE}🧪 Testing Danger Checks Locally${NC}"
@@ -85,7 +86,7 @@ echo ""
 OUTPUT_FILE="/tmp/danger-results-$(date +%s).json"
 
 if "${DANGER_DIR}/danger-analyze.sh" \
-    --rules "${DANGER_DIR}/rules.json" \
+    --rules "${DANGER_DIR}/../rules.json" \
     --output "$OUTPUT_FILE" \
     --base "$BASE_BRANCH" \
     --verbose; then
