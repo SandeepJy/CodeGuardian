@@ -133,20 +133,6 @@ if [[ -f "$OUTPUT_FILE" ]]; then
     echo "=================================="
     echo ""
     
-    # Generate preview of PR comment
-    echo -e "${BLUE}📝 Preview of PR comment:${NC}"
-    echo "=================================="
-    
-    # Use the github-pr-comment script in local mode
-    GITHUB_TOKEN="" \
-    GITHUB_REPOSITORY="" \
-    GITHUB_PR_NUMBER="" \
-    "${SCRIPT_DIR}/github-pr-comment.sh" "$OUTPUT_FILE" 2>/dev/null || true
-    
-    echo ""
-    echo "=================================="
-    echo ""
-    
     # Final status
     if [[ "$PASSED" == "true" ]]; then
         echo -e "${GREEN}✅ All checks passed!${NC}"
