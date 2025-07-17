@@ -14,9 +14,9 @@ NC='\033[0m' # No Color
 
 # Default configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-RULES_FILE="${RULES_FILE:-${PROJECT_ROOT}/Danger/rules.json}"
-CUSTOM_DIR="${CUSTOM_DIR:-${PROJECT_ROOT}/Danger/custom-checks}"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+RULES_FILE="${RULES_FILE:-${PROJECT_ROOT}/rules.json}"
+CUSTOM_DIR="${CUSTOM_DIR:-${PROJECT_ROOT}/custom-checks}"
 OUTPUT_FILE="${OUTPUT_FILE:-${PROJECT_ROOT}/danger-results.json}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 VERBOSE="${VERBOSE:-false}"
@@ -96,8 +96,6 @@ get_added_lines_for_file() {
 }
 export -f get_added_lines_for_file
 
-# Make add_result available to custom scripts
-export -f add_result
 
 
 # Run custom checks from the custom directory
@@ -226,6 +224,9 @@ EOF
 
     log "DEBUG" "Result added successfully"
 }
+# Make add_result available to custom scripts
+export -f add_result
+
 
 # Update results in JSON file after processing all rules
 update_results() {
