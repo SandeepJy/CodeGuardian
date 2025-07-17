@@ -15,7 +15,8 @@ NC='\033[0m' # No Color
 # Default configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-RULES_FILE="${RULES_FILE:-${SCRIPT_DIR}/rules.json}"
+RULES_FILE="${RULES_FILE:-${PROJECT_ROOT}/Danger/rules.json}"
+CUSTOM_DIR="${CUSTOM_DIR:-${PROJECT_ROOT}/Danger/custom-checks}"
 OUTPUT_FILE="${OUTPUT_FILE:-${PROJECT_ROOT}/danger-results.json}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 VERBOSE="${VERBOSE:-false}"
@@ -23,11 +24,123 @@ VERBOSE="${VERBOSE:-false}"
 # Source utilities
 source "${SCRIPT_DIR}/lib/utils.sh"
 
+# Expose helper functions for custom scripts
+export -f log
+export VERBOSE
+
 # Counters
 errors=0
 warnings=0
 info=0
 results=()
+
+# Helper functions that can be used by custom scripts
+get_changed_files() {
+    local base_ref="${BASE_BRANCH}"
+    
+    # In GitHub Actions, we might need to use origin/base_branch
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+        if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+            base_ref="origin/${BASE_BRANCH}"
+        fi
+    fi
+    
+    # Get files changed between base branch and current HEAD
+    git diff --name-only "${base_ref}...HEAD" 2>/dev/null || echo ""
+}
+export -f get_changed_files
+
+get_added_files() {
+    local base_ref="${BASE_BRANCH}"
+    
+    # In GitHub Actions, we might need to use origin/base_branch
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+        if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+            base_ref="origin/${BASE_BRANCH}"
+        fi
+    fi
+    
+    # Get files added between base branch and current HEAD
+    git diff --name-only --diff-filter=A "${base_ref}...HEAD" 2>/dev/null || echo ""
+}
+export -f get_added_files
+
+get_modified_files() {
+    local base_ref="${BASE_BRANCH}"
+    
+    # In GitHub Actions, we might need to use origin/base_branch
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+        if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+            base_ref="origin/${BASE_BRANCH}"
+        fi
+    fi
+    
+    # Get files modified between base branch and current HEAD
+    git diff --name-only --diff-filter=M "${base_ref}...HEAD" 2>/dev/null || echo ""
+}
+export -f get_modified_files
+
+get_added_lines_for_file() {
+    local file="$1"
+    local base_ref="${BASE_BRANCH}"
+    
+    # In GitHub Actions, we might need to use origin/base_branch
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+        if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+            base_ref="origin/${BASE_BRANCH}"
+        fi
+    fi
+    
+    # Get added lines for the specified file
+    git diff "${base_ref}...HEAD" -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' || echo ""
+}
+export -f get_added_lines_for_file
+
+# Make add_result available to custom scripts
+export -f add_result
+
+
+# Run custom checks from the custom directory
+run_custom_checks() {
+    if [[ ! -d "$CUSTOM_DIR" ]]; then
+        log "INFO" "No custom checks directory found at $CUSTOM_DIR"
+        return 0
+    fi
+    
+    log "INFO" "Running custom checks from $CUSTOM_DIR"
+    
+    # Find all executable shell scripts in the custom directory
+    local custom_scripts=$(find "$CUSTOM_DIR" -type f -name "*.sh" -executable 2>/dev/null || echo "")
+    
+    if [[ -z "$custom_scripts" ]]; then
+        log "INFO" "No custom check scripts found"
+        return 0
+    fi
+    
+    # Export necessary variables and functions for custom scripts
+    export PROJECT_ROOT
+    export BASE_BRANCH
+    export RULES_FILE
+    export OUTPUT_FILE
+    
+    # Run each custom script
+    while IFS= read -r script; do
+        log "INFO" "Running custom check: $(basename "$script")"
+        
+        # Source the script so it has access to our helper functions
+        # This is safer than executing it directly
+        if source "$script"; then
+            log "INFO" "Custom check completed: $(basename "$script")"
+        else
+            log "ERROR" "Custom check failed: $(basename "$script")"
+            add_result "error" "custom_check_failure" "Custom Check Failure" \
+                "The custom check script $(basename "$script") failed to execute properly." \
+                "Check the script for errors." "$(basename "$script")"
+        fi
+    done <<< "$custom_scripts"
+    
+    log "INFO" "All custom checks completed"
+}
 
 # Initialize results JSON
 init_results() {
@@ -573,6 +686,9 @@ main() {
     
     # Process rules
     process_rules
+
+    # Run custom checks
+    run_custom_checks
     
     # Save results to JSON file
     update_results
@@ -591,6 +707,10 @@ while [[ $# -gt 0 ]]; do
             RULES_FILE="$2"
             shift 2
             ;;
+        -c|--custom-dir)
+            CUSTOM_DIR="$2"
+            shift 2
+            ;;
         -o|--output)
             OUTPUT_FILE="$2"
             shift 2
@@ -606,7 +726,8 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
-            echo "  -r, --rules FILE     Path to rules.json file (default: ./DangerSystem/rules.json)"
+            echo "  -r, --rules FILE     Path to rules.json file (default: ./Danger/rules.json)"
+            echo "  -c, --custom-dir DIR Path to custom checks directory (default: ./Danger/custom-checks)"
             echo "  -o, --output FILE    Output file for results (default: ./danger-results.json)"
             echo "  -b, --base BRANCH    Base branch to compare against (default: main)"
             echo "  -v, --verbose        Enable verbose logging"
