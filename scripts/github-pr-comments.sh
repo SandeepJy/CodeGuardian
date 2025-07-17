@@ -171,7 +171,7 @@ generate_comment() {
 
 # Find existing comment ID
 find_existing_comment() {
-    local comments_url="https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${GITHUB_PR_NUMBER}/comments"
+    local comments_url="https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${GITHUB_PR_NUMBER}/comments"
     
     # Get all comments and find one that contains our signature
     local comment_id=$(curl -s \
@@ -199,7 +199,7 @@ post_comment() {
         curl -s -X PATCH \
             -H "Authorization: token ${GITHUB_TOKEN}" \
             -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/comments/${existing_comment_id}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/comments/${existing_comment_id}" \
             -d "{\"body\": ${json_body}}" > /dev/null
         
         echo "✅ Comment updated successfully"
@@ -210,7 +210,7 @@ post_comment() {
         curl --verbose -s -X POST \
             -H "Authorization: token ${GITHUB_TOKEN}" \
             -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${GITHUB_PR_NUMBER}/comments" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${GITHUB_PR_NUMBER}/comments" \
             -d "{\"body\": ${json_body}}" > /dev/null
         
         echo "✅ Comment created successfully"
