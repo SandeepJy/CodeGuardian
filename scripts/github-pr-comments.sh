@@ -208,7 +208,7 @@ post_comment() {
         echo "Creating new comment..."
         
         curl --verbose -s -X POST \
-            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H "Authorization: token ${GEN_TOKEN}" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${GITHUB_PR_NUMBER}/comments" \
             -d "{\"body\": ${json_body}}" > /dev/null
