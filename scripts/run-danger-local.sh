@@ -13,6 +13,8 @@ NC='\033[0m'
 
 # Configuration
 DANGER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DANGER_PARENT="$(dirname "$DANGER_DIR")"
+RULES_PATH="$(dirname "$DANGER_PARENT")"
 
 BASE_BRANCH="${1:-main}"
 
@@ -86,7 +88,7 @@ echo ""
 OUTPUT_FILE="/tmp/danger-results-$(date +%s).json"
 
 if "${DANGER_DIR}/danger-analyze.sh" \
-    --rules "${DANGER_DIR}/../rules.json" \
+    --rules "${RULES_PATH}/rules.json" \
     --output "$OUTPUT_FILE" \
     --base "$BASE_BRANCH" \
     --verbose; then

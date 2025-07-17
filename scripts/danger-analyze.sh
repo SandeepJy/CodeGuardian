@@ -15,11 +15,14 @@ NC='\033[0m' # No Color
 # Default configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${PROJECT_ROOT}/.." && pwd)"
 RULES_FILE="${RULES_FILE:-${PROJECT_ROOT}/rules.json}"
 CUSTOM_DIR="${CUSTOM_DIR:-${PROJECT_ROOT}/custom-checks}"
 OUTPUT_FILE="${OUTPUT_FILE:-${PROJECT_ROOT}/danger-results.json}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 VERBOSE="${VERBOSE:-false}"
+
+echo "OUTOUT_FILES is ${OUTPUT_FILE}"
 
 # Source utilities
 source "${SCRIPT_DIR}/lib/utils.sh"
@@ -108,7 +111,7 @@ run_custom_checks() {
     log "INFO" "Running custom checks from $CUSTOM_DIR"
     
     # Find all executable shell scripts in the custom directory
-    local custom_scripts=$(find "$CUSTOM_DIR" -type f -name "*.sh" -executable 2>/dev/null || echo "")
+    local custom_scripts=$(find "$CUSTOM_DIR" -type f -name "*.sh" 2>/dev/null || echo "")
     
     if [[ -z "$custom_scripts" ]]; then
         log "INFO" "No custom check scripts found"
@@ -663,7 +666,7 @@ main() {
     echo "🔍 Starting Danger Analysis..."
     
     # Change to project root for git operations
-    cd "$PROJECT_ROOT"
+    cd "$REPO_ROOT"
 
     # Check dependencies
     if ! command -v jq &> /dev/null; then
