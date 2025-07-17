@@ -207,7 +207,7 @@ post_comment() {
         # Create new comment
         echo "Creating new comment..."
         
-        curl -s -X POST \
+        curl --verbose -s -X POST \
             -H "Authorization: token ${GITHUB_TOKEN}" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${GITHUB_PR_NUMBER}/comments" \
@@ -257,21 +257,4 @@ main() {
     set_github_outputs
 }
 
-# Check if running in CI mode or local mode
-if [[ -n "$GITHUB_TOKEN" ]] && [[ -n "$GITHUB_REPOSITORY" ]] && [[ -n "$GITHUB_PR_NUMBER" ]]; then
-    # CI mode - post to GitHub
-    main
-else
-    # Local mode - just print the comment
-    echo "Running in local mode (no GitHub environment variables found)"
-    echo "Generated comment preview:"
-    echo "========================================="
-    generate_comment
-    echo "========================================="
-    
-    # Still check if passed
-    local passed=$(jq -r '.summary.passed' "$RESULTS_FILE")
-    if [[ "$passed" == "false" ]]; then
-        exit 1
-    fi
-fi
+main
