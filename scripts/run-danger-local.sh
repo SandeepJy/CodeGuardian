@@ -17,6 +17,7 @@ DANGER_PARENT="$(dirname "$DANGER_DIR")"
 RULES_PATH="$(dirname "$DANGER_PARENT")"
 
 BASE_BRANCH="${1:-main}"
+INCLUDE_UNCOMMITTED="${INCLUDE_UNCOMMITTED:-true}"
 
 echo -e "${BLUE}🧪 Testing Danger Checks Locally${NC}"
 echo "=================================="
@@ -28,40 +29,40 @@ if ! git rev-parse --git-dir > /dev/null 2>&1; then
     exit 1
 fi
 
-# Check for uncommitted changes
+# Check for uncommitted changes and inform user
 if ! git diff-index --quiet HEAD --; then
-    echo -e "${YELLOW}Warning: You have uncommitted changes${NC}"
-    echo "The analysis will only include committed changes."
-    echo "Please commit your changes first if you want them analyzed."
+    echo -e "${YELLOW}Uncommitted changes detected${NC}"
+    echo "The analysis will include uncommitted changes by default."
     echo ""
-    read -p "Continue with analysis of committed changes only? (y/N) " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Aborted."
-        exit 1
-    fi
 fi
 
-# Check if there are any commits ahead of base branch
-COMMITS_AHEAD=$(git rev-list --count "${BASE_BRANCH}..HEAD" 2>/dev/null || echo "0")
-if [[ "$COMMITS_AHEAD" -eq 0 ]]; then
-    echo -e "${YELLOW}Warning: No commits found ahead of ${BASE_BRANCH}${NC}"
-    echo "Make sure you have committed your changes and are on the correct branch."
-    echo ""
-    read -p "Continue anyway? (y/N) " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Aborted."
-        exit 1
+# Check if there are any commits ahead of base branch (only if not including uncommitted)
+if [[ "$INCLUDE_UNCOMMITTED" != "true" ]]; then
+    COMMITS_AHEAD=$(git rev-list --count "${BASE_BRANCH}..HEAD" 2>/dev/null || echo "0")
+    if [[ "$COMMITS_AHEAD" -eq 0 ]]; then
+        echo -e "${YELLOW}Warning: No commits found ahead of ${BASE_BRANCH}${NC}"
+        echo "Make sure you have committed your changes and are on the correct branch."
+        echo ""
+        read -p "Continue anyway? (y/N) " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Aborted."
+            exit 1
+        fi
     fi
+    echo -e "${BLUE}Commits ahead of ${BASE_BRANCH}:${NC} $COMMITS_AHEAD"
 fi
-
-echo -e "${BLUE}Commits ahead of ${BASE_BRANCH}:${NC} $COMMITS_AHEAD"
 
 # Get current branch
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 echo -e "${BLUE}Current branch:${NC} $CURRENT_BRANCH"
 echo -e "${BLUE}Base branch:${NC} $BASE_BRANCH"
+
+if [[ "$INCLUDE_UNCOMMITTED" == "true" ]]; then
+    echo -e "${BLUE}Analysis mode:${NC} Including uncommitted changes"
+else
+    echo -e "${BLUE}Analysis mode:${NC} Committed changes only"
+fi
 echo ""
 
 # Check if base branch exists
@@ -87,11 +88,18 @@ echo ""
 
 OUTPUT_FILE="/tmp/danger-results-$(date +%s).json"
 
-if "${DANGER_DIR}/danger-analyze.sh" \
-    --rules "${RULES_PATH}/rules.json" \
-    --output "$OUTPUT_FILE" \
-    --base "$BASE_BRANCH" \
-    --verbose; then
+ARGS=(
+    --rules "${RULES_PATH}/rules.json"
+    --output "$OUTPUT_FILE"
+    --base "$BASE_BRANCH"
+    --verbose
+)
+
+if [[ "$INCLUDE_UNCOMMITTED" == "true" ]]; then
+    ARGS+=(--include-uncommitted)
+fi
+
+if "${DANGER_DIR}/danger-analyze.sh" "${ARGS[@]}"; then
     EXIT_CODE=0
 else
     EXIT_CODE=$?
@@ -141,12 +149,6 @@ if [[ -f "$OUTPUT_FILE" ]]; then
         echo "Your PR is ready to be submitted."
     else
         echo -e "${RED}❌ Checks failed!${NC}"
-        echo "Please fix the issues before creating a PR."
-        echo ""
-        echo "To bypass specific checks, you can:"
-        echo "  • Add exclusion comments (see rules.json)"
-        echo "  • Modify rules.json to adjust severity levels"
-        echo "  • Discuss with your team if the rule should be changed"
     fi
     
     echo ""

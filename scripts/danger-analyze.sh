@@ -21,8 +21,7 @@ CUSTOM_DIR="${CUSTOM_DIR:-${PROJECT_ROOT}/custom-checks}"
 OUTPUT_FILE="${OUTPUT_FILE:-${PROJECT_ROOT}/danger-results.json}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 VERBOSE="${VERBOSE:-false}"
-
-echo "OUTOUT_FILES is ${OUTPUT_FILE}"
+INCLUDE_UNCOMMITTED="${INCLUDE_UNCOMMITTED:-false}"
 
 # Source utilities
 source "${SCRIPT_DIR}/lib/utils.sh"
@@ -37,8 +36,8 @@ warnings=0
 info=0
 results=()
 
-# Helper functions that can be used by custom scripts
-get_changed_files() {
+# Helper function to get base ref with GitHub Actions support
+get_base_ref() {
     local base_ref="${BASE_BRANCH}"
     
     # In GitHub Actions, we might need to use origin/base_branch
@@ -48,58 +47,314 @@ get_changed_files() {
         fi
     fi
     
+    echo "$base_ref"
+}
+export -f get_base_ref
+
+# Get untracked files
+get_untracked_files() {
+    if [[ "$INCLUDE_UNCOMMITTED" == "true" ]]; then
+        git ls-files --others --exclude-standard 2>/dev/null || echo ""
+    else
+        echo ""
+    fi
+}
+export -f get_untracked_files
+
+# Get files that were deleted
+get_deleted_files() {
+    local base_ref=$(get_base_ref)
+    
+    local deleted_files=""
+    
+    if [[ "$INCLUDE_UNCOMMITTED" == "true" ]]; then
+        # Get committed deleted files
+        deleted_files=$(git diff --name-only --diff-filter=D "${base_ref}...HEAD" 2>/dev/null || echo "")
+        # Get uncommitted deleted files (staged)
+        local staged_deleted=$(git diff --name-only --diff-filter=D --cached 2>/dev/null || echo "")
+        # Get uncommitted deleted files (unstaged)
+        local unstaged_deleted=$(git diff --name-only --diff-filter=D HEAD 2>/dev/null || echo "")
+        
+        # Combine and deduplicate
+        local all_deleted=$(printf "%s\n%s\n%s" "$deleted_files" "$staged_deleted" "$unstaged_deleted" | sort -u | grep -v '^$' || echo "")
+        echo "$all_deleted"
+    else
+        deleted_files=$(git diff --name-only --diff-filter=D "${base_ref}...HEAD" 2>/dev/null || echo "")
+        echo "$deleted_files"
+    fi
+}
+export -f get_deleted_files
+
+# Get all changed files (excluding deleted)
+get_changed_files() {
+    local base_ref=$(get_base_ref)
+    
+    local changed_files=""
+    
     # Get files changed between base branch and current HEAD
-    git diff --name-only "${base_ref}...HEAD" 2>/dev/null || echo ""
+    if [[ "$INCLUDE_UNCOMMITTED" == "true" ]]; then
+        # Include uncommitted changes by comparing to working directory
+        changed_files=$(git diff --name-only "${base_ref}...HEAD" 2>/dev/null || echo "")
+        local uncommitted_files=$(git diff --name-only HEAD 2>/dev/null || echo "")
+        local untracked_files=$(get_untracked_files)
+        
+        # Combine and deduplicate
+        local all_files=$(printf "%s\n%s\n%s" "$changed_files" "$uncommitted_files" "$untracked_files" | sort -u | grep -v '^$' || echo "")
+        
+        # Filter out deleted files
+        local deleted_files=$(get_deleted_files)
+        if [[ -n "$deleted_files" ]]; then
+            all_files=$(comm -23 <(echo "$all_files" | sort) <(echo "$deleted_files" | sort) | grep -v '^$' || echo "")
+        fi
+        
+        echo "$all_files"
+    else
+        # Only committed changes
+        changed_files=$(git diff --name-only "${base_ref}...HEAD" 2>/dev/null || echo "")
+        
+        # Filter out deleted files
+        local deleted_files=$(get_deleted_files)
+        if [[ -n "$deleted_files" ]]; then
+            changed_files=$(comm -23 <(echo "$changed_files" | sort) <(echo "$deleted_files" | sort) | grep -v '^$' || echo "")
+        fi
+        
+        echo "$changed_files"
+    fi
 }
 export -f get_changed_files
 
 get_added_files() {
-    local base_ref="${BASE_BRANCH}"
+    local base_ref=$(get_base_ref)
     
-    # In GitHub Actions, we might need to use origin/base_branch
-    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
-            base_ref="origin/${BASE_BRANCH}"
-        fi
+    local added_files=""
+    
+    if [[ "$INCLUDE_UNCOMMITTED" == "true" ]]; then
+        # Get committed added files
+        added_files=$(git diff --name-only --diff-filter=A "${base_ref}...HEAD" 2>/dev/null || echo "")
+        # Get uncommitted added files (staged)
+        local staged_added=$(git diff --name-only --diff-filter=A --cached 2>/dev/null || echo "")
+        # Get untracked files
+        local untracked_files=$(get_untracked_files)
+        
+        # Combine and deduplicate
+        local all_added=$(printf "%s\n%s\n%s" "$added_files" "$staged_added" "$untracked_files" | sort -u | grep -v '^$' || echo "")
+        echo "$all_added"
+    else
+        added_files=$(git diff --name-only --diff-filter=A "${base_ref}...HEAD" 2>/dev/null || echo "")
+        echo "$added_files"
     fi
-    
-    # Get files added between base branch and current HEAD
-    git diff --name-only --diff-filter=A "${base_ref}...HEAD" 2>/dev/null || echo ""
 }
 export -f get_added_files
 
 get_modified_files() {
-    local base_ref="${BASE_BRANCH}"
+    local base_ref=$(get_base_ref)
     
-    # In GitHub Actions, we might need to use origin/base_branch
-    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
-            base_ref="origin/${BASE_BRANCH}"
-        fi
+    local modified_files=""
+    
+    if [[ "$INCLUDE_UNCOMMITTED" == "true" ]]; then
+        # Get committed modified files
+        modified_files=$(git diff --name-only --diff-filter=M "${base_ref}...HEAD" 2>/dev/null || echo "")
+        # Get uncommitted modified files
+        local uncommitted_modified=$(git diff --name-only --diff-filter=M HEAD 2>/dev/null || echo "")
+        local staged_modified=$(git diff --name-only --diff-filter=M --cached 2>/dev/null || echo "")
+        
+        # Combine and deduplicate
+        local all_modified=$(printf "%s\n%s\n%s" "$modified_files" "$uncommitted_modified" "$staged_modified" | sort -u | grep -v '^$' || echo "")
+        echo "$all_modified"
+    else
+        modified_files=$(git diff --name-only --diff-filter=M "${base_ref}...HEAD" 2>/dev/null || echo "")
+        echo "$modified_files"
     fi
-    
-    # Get files modified between base branch and current HEAD
-    git diff --name-only --diff-filter=M "${base_ref}...HEAD" 2>/dev/null || echo ""
 }
 export -f get_modified_files
 
-get_added_lines_for_file() {
+# Check if a file is untracked
+is_untracked_file() {
     local file="$1"
-    local base_ref="${BASE_BRANCH}"
+    local untracked_files=$(get_untracked_files)
     
-    # In GitHub Actions, we might need to use origin/base_branch
-    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
-            base_ref="origin/${BASE_BRANCH}"
-        fi
+    if [[ -n "$untracked_files" ]]; then
+        while IFS= read -r untracked; do
+            [[ "$file" == "$untracked" ]] && return 0
+        done <<< "$untracked_files"
     fi
     
-    # Get added lines for the specified file
-    git diff "${base_ref}...HEAD" -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' || echo ""
+    return 1
+}
+export -f is_untracked_file
+
+# Get added lines for a file with line numbers
+get_added_lines_with_numbers() {
+    local file="$1"
+    local base_ref=$(get_base_ref)
+    
+    # Check if file exists (it might be deleted)
+    if [[ ! -f "$file" ]]; then
+        return 0
+    fi
+    
+    # Check if this is an untracked file
+    if is_untracked_file "$file"; then
+        # For untracked files, all lines are "added"
+        local line_num=1
+        while IFS= read -r line; do
+            echo "${line_num}:${line}"
+            ((line_num++))
+        done < "$file"
+        return 0
+    fi
+    
+    local diff_output=""
+    if [[ "$INCLUDE_UNCOMMITTED" == "true" ]]; then
+        # Get committed changes
+        local committed_diff=$(git diff "${base_ref}...HEAD" -- "$file" 2>/dev/null || true)
+        # Get uncommitted changes
+        local uncommitted_diff=$(git diff HEAD -- "$file" 2>/dev/null || true)
+        diff_output=$(printf "%s\n%s" "$committed_diff" "$uncommitted_diff")
+    else
+        diff_output=$(git diff "${base_ref}...HEAD" -- "$file" 2>/dev/null || true)
+    fi
+    
+    if [[ -z "$diff_output" ]]; then
+        return 0
+    fi
+    
+    # Parse diff to get added lines with their line numbers
+    local current_line=0
+    local in_hunk=false
+    
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^@@\ -[0-9]+,[0-9]+\ \+([0-9]+),[0-9]+\ @@ ]]; then
+            # Extract starting line number for new file
+            current_line=${BASH_REMATCH[1]}
+            in_hunk=true
+            continue
+        fi
+
+        if [[ "$in_hunk" == "true" ]]; then
+            if [[ "$line" =~ ^[+] ]]; then
+                # This is an added line
+                local content="${line:1}"  # Remove the + prefix
+                echo "${current_line}:${content}"
+                ((current_line++))
+            elif [[ "$line" =~ ^[^-] ]]; then
+                # Context line or unchanged line
+                ((current_line++))
+            fi
+            # Lines starting with - are deletions, don't increment line number
+        fi
+    done <<< "$diff_output"
+}
+export -f get_added_lines_with_numbers
+
+get_added_lines_for_file() {
+    local file="$1"
+    local base_ref=$(get_base_ref)
+    
+    # Check if file exists (it might be deleted)
+    if [[ ! -f "$file" ]]; then
+        return 0
+    fi
+    
+    # Check if this is an untracked file
+    if is_untracked_file "$file"; then
+        # For untracked files, all lines are "added"
+        # Add a '+' prefix to match the format of diff output
+        while IFS= read -r line; do
+            echo "+${line}"
+        done < "$file"
+        return 0
+    fi
+    
+    if [[ "$INCLUDE_UNCOMMITTED" == "true" ]]; then
+        # Get committed changes
+        local committed_lines=$(git diff "${base_ref}...HEAD" -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' || echo "")
+        # Get uncommitted changes
+        local uncommitted_lines=$(git diff HEAD -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' || echo "")
+        
+        # Combine
+        printf "%s\n%s" "$committed_lines" "$uncommitted_lines" | grep -v '^$' || echo ""
+    else
+        # Get added lines for the specified file
+        git diff "${base_ref}...HEAD" -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' || echo ""
+    fi
 }
 export -f get_added_lines_for_file
 
-
+# Check dependent file modification rules
+check_dependent_file() {
+    local rule_json=$1
+    local changed_files=$2
+    
+    local rule_id=$(echo "$rule_json" | jq -r '.id')
+    local rule_name=$(echo "$rule_json" | jq -r '.name')
+    local severity=$(echo "$rule_json" | jq -r '.severity')
+    local message=$(echo "$rule_json" | jq -r '.message')
+    local source_patterns=$(echo "$rule_json" | jq -r '.source_patterns[]')
+    local dependent_files=$(echo "$rule_json" | jq -r '.dependent_files[]')
+    local source_folders=$(echo "$rule_json" | jq -r '.source_folders[]?' 2>/dev/null || echo "")
+    
+    log "INFO" "Checking dependent file rule: $rule_name"
+    
+    local source_modified=false
+    local dependent_modified=false
+    local matched_files=()
+    
+    # Check if any source files were modified
+    while IFS= read -r file; do
+        [[ -z "$file" ]] && continue
+        
+        # Check source patterns
+        while IFS= read -r pattern; do
+            [[ -z "$pattern" ]] && continue
+            
+            local should_check_pattern=true
+            
+            # If source_folders is specified, file must be in one of those folders
+            if [[ -n "$source_folders" ]]; then
+                should_check_pattern=false
+                while IFS= read -r folder; do
+                    [[ -z "$folder" ]] && continue
+                    if [[ "$file" == $folder* ]]; then
+                        should_check_pattern=true
+                        break
+                    fi
+                done <<< "$source_folders"
+            fi
+            
+            if [[ "$should_check_pattern" == "true" ]] && [[ "$file" == $pattern ]]; then
+                log "MATCH" "Source file modified: $file matches pattern $pattern"
+                source_modified=true
+                matched_files+=("$file")
+            fi
+        done <<< "$source_patterns"
+    done <<< "$changed_files"
+    
+    # If source files were modified, check if dependent files were also modified
+    if [[ "$source_modified" == "true" ]]; then
+        while IFS= read -r dependent_pattern; do
+            [[ -z "$dependent_pattern" ]] && continue
+            
+            while IFS= read -r file; do
+                [[ -z "$file" ]] && continue
+                if [[ "$file" == $dependent_pattern ]]; then
+                    log "INFO" "Dependent file found modified: $file"
+                    dependent_modified=true
+                    break 2
+                fi
+            done <<< "$changed_files"
+        done <<< "$dependent_files"
+        
+        # If dependent files were not modified, report violation
+        if [[ "$dependent_modified" == "false" ]]; then
+            log "MATCH" "Source files modified but dependent files not updated"
+            local matched_files_str=$(IFS=', '; echo "${matched_files[*]}")
+            local dependent_files_str=$(echo "$dependent_files" | tr '\n' ', ' | sed 's/,$//')
+            local detail="Modified source files: $matched_files_str. Expected dependent files to be updated: $dependent_files_str"
+            add_result "$severity" "$rule_id" "$rule_name" "$message" "$detail" "$matched_files_str"
+        fi
+    fi
+}
 
 # Run custom checks from the custom directory
 run_custom_checks() {
@@ -123,6 +378,7 @@ run_custom_checks() {
     export BASE_BRANCH
     export RULES_FILE
     export OUTPUT_FILE
+    export INCLUDE_UNCOMMITTED
     
     # Run each custom script
     while IFS= read -r script; do
@@ -151,6 +407,7 @@ init_results() {
   "branch": "$(git rev-parse --abbrev-ref HEAD)",
   "base_branch": "${BASE_BRANCH}",
   "commit": "$(git rev-parse HEAD)",
+  "include_uncommitted": ${INCLUDE_UNCOMMITTED},
   "results": {
     "errors": [],
     "warnings": [],
@@ -230,7 +487,6 @@ EOF
 # Make add_result available to custom scripts
 export -f add_result
 
-
 # Update results in JSON file after processing all rules
 update_results() {
     local temp_file=$(mktemp)
@@ -242,6 +498,7 @@ update_results() {
   "branch": "$(git rev-parse --abbrev-ref HEAD)",
   "base_branch": "${BASE_BRANCH}",
   "commit": "$(git rev-parse HEAD)",
+  "include_uncommitted": ${INCLUDE_UNCOMMITTED},
   "results": {
     "errors": [],
     "warnings": [],
@@ -297,28 +554,60 @@ check_diff_size() {
     
     log "INFO" "Checking diff size rule: $rule_name (max: $max_lines lines, type: $count_type)"
     
-    local base_ref="${BASE_BRANCH}"
-    
-    # In GitHub Actions, we might need to use origin/base_branch
-    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
-            base_ref="origin/${BASE_BRANCH}"
-        fi
-    fi
+    local base_ref=$(get_base_ref)
     
     # Get diff stats
     local diff_stats
-    case "$count_type" in
-        "added")
-            diff_stats=$(git diff --numstat "${base_ref}...HEAD" | awk '{added += $1} END {print added+0}')
-            ;;
-        "removed")
-            diff_stats=$(git diff --numstat "${base_ref}...HEAD" | awk '{removed += $2} END {print removed+0}')
-            ;;
-        "total"|*)
-            diff_stats=$(git diff --numstat "${base_ref}...HEAD" | awk '{added += $1; removed += $2} END {print added+removed+0}')
-            ;;
-    esac
+    if [[ "$INCLUDE_UNCOMMITTED" == "true" ]]; then
+        # Include uncommitted changes in diff stats
+        case "$count_type" in
+            "added")
+                local committed_added=$(git diff --numstat "${base_ref}...HEAD" | awk '{added += $1} END {print added+0}')
+                local uncommitted_added=$(git diff --numstat HEAD | awk '{added += $1} END {print added+0}')
+                # Count lines in untracked files
+                local untracked_lines=0
+                local untracked_files=$(get_untracked_files)
+                if [[ -n "$untracked_files" ]]; then
+                    while IFS= read -r file; do
+                        [[ -z "$file" ]] && continue
+                        [[ -f "$file" ]] && untracked_lines=$((untracked_lines + $(wc -l < "$file" 2>/dev/null || echo 0)))
+                    done <<< "$untracked_files"
+                fi
+                diff_stats=$((committed_added + uncommitted_added + untracked_lines))
+                ;;
+            "removed")
+                local committed_removed=$(git diff --numstat "${base_ref}...HEAD" | awk '{removed += $2} END {print removed+0}')
+                local uncommitted_removed=$(git diff --numstat HEAD | awk '{removed += $2} END {print removed+0}')
+                diff_stats=$((committed_removed + uncommitted_removed))
+                ;;
+            "total"|*)
+                local committed_total=$(git diff --numstat "${base_ref}...HEAD" | awk '{added += $1; removed += $2} END {print added+removed+0}')
+                local uncommitted_total=$(git diff --numstat HEAD | awk '{added += $1; removed += $2} END {print added+removed+0}')
+                # Count lines in untracked files
+                local untracked_lines=0
+                local untracked_files=$(get_untracked_files)
+                if [[ -n "$untracked_files" ]]; then
+                    while IFS= read -r file; do
+                        [[ -z "$file" ]] && continue
+                        [[ -f "$file" ]] && untracked_lines=$((untracked_lines + $(wc -l < "$file" 2>/dev/null || echo 0)))
+                    done <<< "$untracked_files"
+                fi
+                diff_stats=$((committed_total + uncommitted_total + untracked_lines))
+                ;;
+        esac
+    else
+        case "$count_type" in
+            "added")
+                diff_stats=$(git diff --numstat "${base_ref}...HEAD" | awk '{added += $1} END {print added+0}')
+                ;;
+            "removed")
+                diff_stats=$(git diff --numstat "${base_ref}...HEAD" | awk '{removed += $2} END {print removed+0}')
+                ;;
+            "total"|*)
+                diff_stats=$(git diff --numstat "${base_ref}...HEAD" | awk '{added += $1; removed += $2} END {print added+removed+0}')
+                ;;
+        esac
+    fi
     
     local line_count=${diff_stats:-0}
     
@@ -330,7 +619,13 @@ check_diff_size() {
         add_result "$severity" "$rule_id" "$rule_name" "$message" "$detail" "DIFF_SIZE"
         
         # Add file breakdown for context
-        local file_breakdown=$(git diff --numstat "${base_ref}...HEAD" | sort -nr | head -10)
+        local file_breakdown
+        if [[ "$INCLUDE_UNCOMMITTED" == "true" ]]; then
+            file_breakdown=$(git diff --numstat "${base_ref}...HEAD"; git diff --numstat HEAD | sort -nr | head -10)
+        else
+            file_breakdown=$(git diff --numstat "${base_ref}...HEAD" | sort -nr | head -10)
+        fi
+        
         if [[ -n "$file_breakdown" ]]; then
             local breakdown_detail="Top files by line changes:\n$file_breakdown"
             add_result "info" "${rule_id}_breakdown" "Large Diff - File Breakdown" "Files contributing most to the large diff" "$breakdown_detail" "DIFF_BREAKDOWN"
@@ -352,7 +647,11 @@ check_file_pattern() {
     log "INFO" "Checking rule: $rule_name"
     
     while IFS= read -r file; do
+        [[ -z "$file" ]] && continue
+        
         while IFS= read -r pattern; do
+            [[ -z "$pattern" ]] && continue
+            
             # Convert glob pattern to find pattern
             if [[ "$file" == $pattern ]]; then
                 log "MATCH" "File $file matches pattern $pattern"
@@ -377,18 +676,12 @@ check_code_pattern() {
    
     log "INFO" "Checking code pattern rule: $rule_name"
     
-    local base_ref="${BASE_BRANCH}"
-    
-    # In GitHub Actions, we might need to use origin/base_branch
-    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
-            base_ref="origin/${BASE_BRANCH}"
-        fi
-    fi
-    
     while IFS= read -r file; do
         [[ -z "$file" ]] && continue
-        
+
+        # Skip if file doesn't exist (deleted files)
+        [[ ! -f "$file" ]] && continue
+
         # Check if file matches file_patterns
         local should_check=false
         
@@ -407,64 +700,46 @@ check_code_pattern() {
             continue
         fi
         
-        # Get the diff between base branch and current HEAD for this file
-        local diff_output=$(git diff "${base_ref}...HEAD" -- "$file" 2>/dev/null || true)
+        # Get added lines with line numbers using our helper function
+        local added_lines=$(get_added_lines_with_numbers "$file")
         
-        if [[ -z "$diff_output" ]]; then
+        if [[ -z "$added_lines" ]]; then
             continue
         fi
         
-        # Parse diff to get added lines with their line numbers
-        local current_line=0
-        local in_hunk=false
-        
-        while IFS= read -r line; do
-            if [[ "$line" =~ ^@@\ -[0-9]+,[0-9]+\ \+([0-9]+),[0-9]+\ @@ ]]; then
-                # Extract starting line number for new file
-                current_line=${BASH_REMATCH[1]}
-                in_hunk=true
-                continue
+        # Check each added line
+        while IFS= read -r line_info; do
+            [[ -z "$line_info" ]] && continue
+            
+            local line_number="${line_info%%:*}"
+            local content="${line_info#*:}"
+            
+            # Check exclude patterns first
+            local excluded=false
+            if [[ -n "$exclude_patterns" ]]; then
+                while IFS= read -r exclude_pattern; do
+                    [[ -z "$exclude_pattern" ]] && continue
+                    if [[ "$content" == *"$exclude_pattern"* ]]; then
+                        excluded=true
+                        break
+                    fi
+                done <<< "$exclude_patterns"
             fi
             
-            if [[ "$in_hunk" == "true" ]]; then
-                if [[ "$line" =~ ^[+] ]]; then
-                    # This is an added line
-                    local content="${line:1}"  # Remove the + prefix
-
-                    # Check exclude patterns first
-                    local excluded=false
-                    if [[ -n "$exclude_patterns" ]]; then
-                        while IFS= read -r exclude_pattern; do
-                            [[ -z "$exclude_pattern" ]] && continue
-                            if [[ "$content" == *"$exclude_pattern"* ]]; then
-                                excluded=true
-                                break
-                            fi
-                        done <<< "$exclude_patterns"
+            if [[ "$excluded" == "false" ]]; then
+                # Check each pattern against the content
+                while IFS= read -r pattern; do
+                    [[ -z "$pattern" ]] && continue
+                    # Use grep for regex matching
+                    if echo "$content" | grep -qE "$pattern" 2>/dev/null; then
+                        log "MATCH" "Pattern '$pattern' found in $file at line $line_number"
+                        local detail="Pattern found in added line: $(echo "$content" | head -c 100)..."
+                        add_result "$severity" "$rule_id" "$rule_name" "$message" "$detail" "$file" "$line_number"
                     fi
-                    
-                    if [[ "$excluded" == "false" ]]; then
-                        # Check each pattern against the content
-                        while IFS= read -r pattern; do
-                            [[ -z "$pattern" ]] && continue
-                            # Use grep for regex matching
-                            if echo "$content" | grep -qE "$pattern" 2>/dev/null; then
-                                log "MATCH" "Pattern '$pattern' found in $file at line $current_line"
-                                local detail="Pattern found in added line: $(echo "$content" | head -c 100)..."
-                                add_result "$severity" "$rule_id" "$rule_name" "$message" "$detail" "$file" "$current_line"
-                            fi
-                        done <<< "$patterns"
-                    fi
-                    
-                    ((current_line++))
-                elif [[ "$line" =~ ^[^-] ]]; then
-                    # Context line or unchanged line
-                    ((current_line++))
-                fi
-                # Lines starting with - are deletions, don't increment line number
+                done <<< "$patterns"
             fi
-        done <<< "$diff_output"
-    done <<< "$changed_files"
+        done <<< "$added_lines"
+    done <<<"$changed_files"
 }
 
 # Check file size rules
@@ -483,7 +758,8 @@ check_file_size() {
     log "INFO" "Checking file size rule: $rule_name"
     
     while IFS= read -r file; do
-        [[ ! -f "$file" ]] && continue
+        [[ -z "$file" ]] && continue
+        [[ ! -f "$file" ]] && continue  # Skip deleted files
         
         # Check exclude patterns
         local excluded=false
@@ -508,35 +784,6 @@ check_file_size() {
             add_result "$severity" "$rule_id" "$rule_name" "$message" "$detail" "$file"
         fi
     done <<< "$changed_files"
-}
-
-get_changed_files() {
-    local base_ref="${BASE_BRANCH}"
-    
-    # In GitHub Actions, we might need to use origin/base_branch
-    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        # Check if we have the base branch locally
-        if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
-            base_ref="origin/${BASE_BRANCH}"
-        fi
-    fi
-    
-    # Verify base branch exists
-    if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
-        log "ERROR" "Base branch '$base_ref' not found. Please fetch it first: git fetch origin ${BASE_BRANCH}"
-        return 1
-    fi
-    
-    # Get files changed between base branch and current HEAD
-    local changed_files=$(git diff --name-only "${base_ref}...HEAD" 2>/dev/null)
-    
-    if [[ -z "$changed_files" ]]; then
-        log "INFO" "No files changed between ${base_ref} and HEAD"
-        return 0
-    fi
-    
-    log "INFO" "Found $(echo "$changed_files" | wc -l) changed files between ${base_ref} and HEAD"
-    echo "$changed_files"
 }
 
 # Check if file should be excluded
@@ -580,7 +827,7 @@ process_rules() {
     
     while IFS= read -r rule; do
         [[ -z "$rule" ]] && continue
-        
+
         local rule_type=$(echo "$rule" | jq -r '.type')
         
         case "$rule_type" in
@@ -593,8 +840,11 @@ process_rules() {
             file_size)
                 check_file_size "$rule" "$filtered_files"
                 ;;
-            diff_size)
+            diff_size|pr_size)
                 check_diff_size "$rule"
+                ;;
+            dependent_file)
+                check_dependent_file "$rule" "$filtered_files"
                 ;;
             *)
                 log "WARN" "Unknown rule type: $rule_type"
@@ -648,15 +898,17 @@ print_summary() {
         fi
     fi
     
+    if [[ "$INCLUDE_UNCOMMITTED" == "true" ]]; then
+        echo -e "${BLUE}📝 Analysis included uncommitted changes${NC}"
+        local untracked_count=$(get_untracked_files | wc -l | tr -d ' ')
+        if [[ "$untracked_count" -gt 0 ]]; then
+            echo -e "${BLUE}📄 Analyzed $untracked_count untracked files${NC}"
+        fi
+    fi
+    
     echo "========================================="
     echo ""
     echo "Full results saved to: $OUTPUT_FILE"
-    
-    # Return non-zero exit code if there are errors
-    # local passed=$(jq -r '.summary.passed' "$OUTPUT_FILE")
-    # if [[ "$passed" == "false" ]]; then
-    #     return 1
-    # fi
     
     return 0
 }
@@ -727,15 +979,20 @@ while [[ $# -gt 0 ]]; do
             VERBOSE="true"
             shift
             ;;
+        -u|--include-uncommitted)
+            INCLUDE_UNCOMMITTED="true"
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
-            echo "  -r, --rules FILE     Path to rules.json file (default: ./Danger/rules.json)"
-            echo "  -c, --custom-dir DIR Path to custom checks directory (default: ./Danger/custom-checks)"
-            echo "  -o, --output FILE    Output file for results (default: ./danger-results.json)"
-            echo "  -b, --base BRANCH    Base branch to compare against (default: main)"
-            echo "  -v, --verbose        Enable verbose logging"
-            echo "  -h, --help           Show this help message"
+            echo "  -r, --rules FILE         Path to rules.json file (default: ./Danger/rules.json)"
+            echo "  -c, --custom-dir DIR     Path to custom checks directory (default: ./Danger/custom-checks)"
+            echo "  -o, --output FILE        Output file for results (default: ./danger-results.json)"
+            echo "  -b, --base BRANCH        Base branch to compare against (default: main)"
+            echo "  -v, --verbose            Enable verbose logging"
+            echo "  -u, --include-uncommitted Include uncommitted changes in analysis"
+            echo "  -h, --help               Show this help message"
             exit 0
             ;;
         *)
