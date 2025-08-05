@@ -775,7 +775,7 @@ process_rules() {
         log "WARN" "Rules file not found at $RULES_FILE"
     fi
 
-    if [[ -f "$RULES_FILE"]]; then
+    if [[ -f "$RULES_FILE" ]]; then
         log "INFO" "Processing rules from rules.json"
         local rules=$(jq -c '.rules[]' "$RULES_FILE" 2>/dev/null)
         while IFS= read -r rule; do
