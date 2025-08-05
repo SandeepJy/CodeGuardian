@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# test-locally.sh - Test danger checks locally before pushing
+# test-locally.sh - Test codeguardian checks locally before pushing
 #
 set -euo pipefail
 
@@ -12,14 +12,14 @@ GREEN='\033[0;32m'
 NC='\033[0m'
 
 # Configuration
-DANGER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DANGER_PARENT="$(dirname "$DANGER_DIR")"
-RULES_PATH="$(dirname "$DANGER_PARENT")"
+CodeGuardian_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CodeGuardian_PARENT="$(dirname "$CodeGuardian_DIR")"
+RULES_PATH="$(dirname "$CodeGuardian_PARENT")"
 
 BASE_BRANCH="${1:-main}"
-INCLUDE_UNCOMMITTED="${INCLUDE_UNCOMMITTED:-true}"
+REMOTE_BASE_BRANCH="origin/$BASE_BRANCH"
 
-echo -e "${BLUE}🧪 Testing Danger Checks Locally${NC}"
+echo -e "${BLUE}🧪 Testing CodeGuardian Checks Locally${NC}"
 echo "=================================="
 echo ""
 
@@ -37,38 +37,22 @@ if ! git diff-index --quiet HEAD --; then
 fi
 
 # Check if there are any commits ahead of base branch (only if not including uncommitted)
-if [[ "$INCLUDE_UNCOMMITTED" != "true" ]]; then
-    COMMITS_AHEAD=$(git rev-list --count "${BASE_BRANCH}..HEAD" 2>/dev/null || echo "0")
-    if [[ "$COMMITS_AHEAD" -eq 0 ]]; then
-        echo -e "${YELLOW}Warning: No commits found ahead of ${BASE_BRANCH}${NC}"
-        echo "Make sure you have committed your changes and are on the correct branch."
-        echo ""
-        read -p "Continue anyway? (y/N) " -n 1 -r
-        echo ""
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo "Aborted."
-            exit 1
-        fi
-    fi
-    echo -e "${BLUE}Commits ahead of ${BASE_BRANCH}:${NC} $COMMITS_AHEAD"
-fi
+COMMITS_AHEAD=$(git rev-list --count "${BASE_BRANCH}..HEAD" 2>/dev/null || echo "0")
+
+echo -e "${BLUE}Commits ahead of ${BASE_BRANCH}:${NC} $COMMITS_AHEAD"
 
 # Get current branch
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 echo -e "${BLUE}Current branch:${NC} $CURRENT_BRANCH"
-echo -e "${BLUE}Base branch:${NC} $BASE_BRANCH"
+echo -e "${BLUE}Base branch:${NC} $REMOTE_BASE_BRANCH"
 
-if [[ "$INCLUDE_UNCOMMITTED" == "true" ]]; then
-    echo -e "${BLUE}Analysis mode:${NC} Including uncommitted changes"
-else
-    echo -e "${BLUE}Analysis mode:${NC} Committed changes only"
-fi
+echo -e "${BLUE}Analysis mode:${NC} Including uncommitted changes"
 echo ""
 
 # Check if base branch exists
-if ! git rev-parse --verify "$BASE_BRANCH" > /dev/null 2>&1; then
-    echo -e "${RED}Error: Base branch '$BASE_BRANCH' does not exist${NC}"
-    echo "Try fetching from remote: git fetch origin $BASE_BRANCH"
+if ! git rev-parse --verify "$REMOTE_BASE_BRANCH" > /dev/null 2>&1; then
+    echo -e "${RED}Error: Base branch '$REMOTE_BASE_BRANCH' does not exist${NC}"
+    echo "Try fetching from remote: git fetch origin $REMOTE_BASE_BRANCH"
     exit 1
 fi
 
@@ -83,10 +67,10 @@ if ! command -v jq &> /dev/null; then
 fi
 
 # Run the analysis
-echo -e "${BLUE}Running danger analysis...${NC}"
+echo -e "${BLUE}Running CodeGuardian analysis...${NC}"
 echo ""
 
-OUTPUT_FILE="/tmp/danger-results-$(date +%s).json"
+OUTPUT_FILE="/tmp/CodeGuardian-results-$(date +%s).json"
 
 ARGS=(
     --rules "${RULES_PATH}/rules.json"
@@ -95,11 +79,8 @@ ARGS=(
     --verbose
 )
 
-if [[ "$INCLUDE_UNCOMMITTED" == "true" ]]; then
-    ARGS+=(--include-uncommitted)
-fi
 
-if "${DANGER_DIR}/danger-analyze.sh" "${ARGS[@]}"; then
+if "${CodeGuardian_DIR}/codeguardian-analyze.sh" "${ARGS[@]}"; then
     EXIT_CODE=0
 else
     EXIT_CODE=$?
@@ -122,21 +103,33 @@ if [[ -f "$OUTPUT_FILE" ]]; then
     # Show errors
     if [[ "$ERROR_COUNT" -gt 0 ]]; then
         echo -e "${RED}❌ Errors ($ERROR_COUNT):${NC}"
-        jq -r '.results.errors[] | "  • [\(.rule_name)] \(.file): \(.message)"' "$OUTPUT_FILE"
+        if [[ -n "${SCRIPT_INPUT_FILE_COUNT:-}" ]]; then
+            jq --arg current_dir "$CURRENT_DIR" -r '.results.errrors[] | "\($current_dir)/\(.file):\(.line): error: \(.message)"' "$OUTPUT_FILE"
+        else 
+            jq -r '.results.errors[] | "  • [\(.rule_name)] \(.file): \(.message)"' "$OUTPUT_FILE"
+        fi
         echo ""
     fi
     
     # Show warnings
     if [[ "$WARNING_COUNT" -gt 0 ]]; then
         echo -e "${YELLOW}⚠️  Warnings ($WARNING_COUNT):${NC}"
-        jq -r '.results.warnings[] | "  • [\(.rule_name)] \(.file): \(.message)"' "$OUTPUT_FILE"
+        if [[ -n "${SCRIPT_INPUT_FILE_COUNT:-}" ]]; then
+            jq --arg current_dir "$CURRENT_DIR" -r '.results.warnings[] | "\($current_dir)/\(.file):\(.line): warning: \(.message)"' "$OUTPUT_FILE"
+        else 
+            jq -r '.results.warnings[] | "  • [\(.rule_name)] \(.file): \(.message)"' "$OUTPUT_FILE"
+        fi
         echo ""
     fi
     
     # Show info
     if [[ "$INFO_COUNT" -gt 0 ]]; then
         echo -e "${BLUE}ℹ️  Information ($INFO_COUNT):${NC}"
-        jq -r '.results.infos[] | "  • [\(.rule_name)] \(.file): \(.message)"' "$OUTPUT_FILE"
+        if [[ -n "${SCRIPT_INPUT_FILE_COUNT:-}" ]]; then
+            jq --arg current_dir "$CURRENT_DIR" -r '.results.infos[] | "\($current_dir)/\(.file):\(.line): note: \(.message)"' "$OUTPUT_FILE"
+        else 
+            jq -r '.results.infos[] | "  • [\(.rule_name)] \(.file): \(.message)"' "$OUTPUT_FILE"
+        fi
         echo ""
     fi
     
