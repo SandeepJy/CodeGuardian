@@ -19,7 +19,8 @@ SCRIPT_ROOT="${SCRIPT_DIR}/.."
 REPO_ROOT="$(cd "${PROJECT_ROOT}/.." && pwd)"
 RULES_FILE="${RULES_FILE:-${PROJECT_ROOT}/rules.json}"
 CUSTOM_DIR="${CUSTOM_DIR:-${PROJECT_ROOT}/custom-checks}"
-OUTPUT_FILE="${OUTPUT_FILE:-${PROJECT_ROOT}/danger-results.json}"
+OUTPUT_FILE="${OUTPUT_FILE:-${PROJECT_ROOT}/codeguardian
+-results.json}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 VERBOSE="${VERBOSE:-false}"
 
@@ -765,7 +766,18 @@ process_rules() {
     local core_rules_file="${SCRIPT_ROOT}/core-rules.json"
     if [[ -f "$core_rules_file" ]]; then
         log "INFO" "Processing rules from core-rules.json"
-        local core_rules=$(jq -c '.rules[]' "$RULES_FILE" 2>/dev/null)
+        local core_rules=$(jq -c '.rules[]' "$core_rules_file" 2>/dev/null)
+        while IFS= read -r rule; do
+            [[ -z "$rule" ]] && continue
+            process_single_rule "$rule" "$filtered_files"
+        done <<< "$core_rules"
+    else
+        log "WARN" "Rules file not found at $RULES_FILE"
+    fi
+
+    if [[ -f "$RULES_FILE"]]; then
+        log "INFO" "Processing rules from rules.json"
+        local rules=$(jq -c '.rules[]' "$RULES_FILE" 2>/dev/null)
         while IFS= read -r rule; do
             [[ -z "$rule" ]] && continue
             process_single_rule "$rule" "$filtered_files"
@@ -933,7 +945,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -r, --rules FILE         Path to rules.json file (default: ./CodeGuardian/rules.json)"
             echo "  -c, --custom-dir DIR     Path to custom checks directory (default: ./CodeGuardian/custom-checks)"
-            echo "  -o, --output FILE        Output file for results (default: ./danger-results.json)"
+            echo "  -o, --output FILE        Output file for results (default: ./codeguardian-results.json)"
             echo "  -b, --base BRANCH        Base branch to compare against (default: main)"
             echo "  -v, --verbose            Enable verbose logging"
             echo "  -u, --include-uncommitted Include uncommitted changes in analysis"
