@@ -772,7 +772,7 @@ process_rules() {
             process_single_rule "$rule" "$filtered_files"
         done <<< "$core_rules"
     else
-        log "WARN" "Rules file not found at $RULES_FILE"
+        log "WARN" "Core Rules file not found at $RULES_FILE"
     fi
 
     if [[ -f "$RULES_FILE" ]]; then
