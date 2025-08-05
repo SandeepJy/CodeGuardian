@@ -1,0 +1,30 @@
+{
+  "rules": [
+    {
+      "id": "large-pr",
+      "name": "Large Pull Request",
+      "description": "Large PRs are harder to review. Consider breaking them into smaller ones.",
+      "severity": "warning",
+      "type": "diff_size",
+      "max_lines": 500,
+      "count_type": "total",
+      "message": "This PR is quite large. Consider breaking it into smaller, more focused PRs."
+    },
+    {
+      "id": "large-file-addition",
+      "name": "Large File Added",
+      "description": "Large files can bloat the repository",
+      "severity": "info",
+      "type": "file_size",
+      "max_size_kb": 1024,
+      "file_patterns": [
+        "**/*"
+      ],
+      "exclude_patterns": [
+        "**/*.xcassets/**",
+        "**/*.bundle/**"
+      ],
+      "message": "Large file detected. Consider if this file is necessary or if it can be optimized."
+    }
+    ]
+}
