@@ -108,17 +108,29 @@ get_added_files() {
     
     local added_files=""
     
-    # Get committed added files
-    added_files=$(git diff --name-only --diff-filter=A "${base_ref}...HEAD" 2>/dev/null || echo "")
-    # Get uncommitted added files (staged)
-    local staged_added=$(git diff --name-only --diff-filter=A --cached 2>/dev/null || echo "")
-    # Get untracked files
+    # Get files that don't exist in base but exist now
+    local all_current_files=$(git ls-files)
+    local base_files=$(git ls-tree -r "${base_ref}" --name-only 2>/dev/null || echo "")
+    
+    # Find files that exist now but not in base
+    added_files=$(comm -13 <(echo "$base_files" | sort) <(echo "$all_current_files" | sort) | grep -v '^$' || echo "")
+    
+    # Add untracked files
     local untracked_files=$(get_untracked_files)
     
     # Combine and deduplicate
-    local all_added=$(printf "%s\n%s\n%s" "$added_files" "$staged_added" "$untracked_files" | sort -u | grep -v '^$' || echo "")
-    echo "$all_added"
+    local all_added=$(printf "%s\n%s" "$added_files" "$untracked_files" | sort -u | grep -v '^$' || echo "")
+    
+    # Filter out files that don't currently exist
+    local existing_added=""
+    while IFS= read -r file; do
+        [[ -z "$file" ]] && continue
+        [[ -f "$file" ]] && existing_added="${existing_added}${file}"$'\n'
+    done <<< "$all_added"
+    
+    echo "$existing_added" | grep -v '^$' || echo ""
 }
+
 export -f get_added_files
 
 get_modified_files() {
@@ -174,12 +186,23 @@ get_added_lines_with_numbers() {
         return 0
     fi
     
-    local diff_output=""
-    # Get committed changes
-    local committed_diff=$(git diff "${base_ref}...HEAD" -- "$file" 2>/dev/null || true)
-    # Get uncommitted changes
-    local uncommitted_diff=$(git diff HEAD -- "$file" 2>/dev/null || true)
-    diff_output=$(printf "%s\n%s" "$committed_diff" "$uncommitted_diff")
+    # For tracked files, we need to check the CURRENT state of the file
+    # compared to the base branch, not the historical diffs
+    
+    # First, check if the file exists in the base branch
+    if ! git show "${base_ref}:${file}" >/dev/null 2>&1; then
+        # File doesn't exist in base branch, so all current lines are "added"
+        local line_num=1
+        while IFS= read -r line; do
+            echo "${line_num}:${line}"
+            ((line_num++))
+        done < "$file"
+        return 0
+    fi
+    
+    # File exists in both base and current, so we need to diff
+    # Use git diff to compare base branch version with current working tree
+    local diff_output=$(git diff "${base_ref}" -- "$file" 2>/dev/null || true)
     
     if [[ -z "$diff_output" ]]; then
         return 0
@@ -232,13 +255,9 @@ get_added_lines_for_file() {
         return 0
     fi
     
-    # Get committed changes
-    local committed_lines=$(git diff "${base_ref}...HEAD" -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' || echo "")
-    # Get uncommitted changes
-    local uncommitted_lines=$(git diff HEAD -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' || echo "")
-    
-    # Combine
-    printf "%s\n%s" "$committed_lines" "$uncommitted_lines" | grep -v '^$' || echo ""
+    # Use git diff to compare base branch with current working tree
+    # This will show the actual current state, not historical changes
+    git diff "${base_ref}" -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' || echo ""
 }
 export -f get_added_lines_for_file
 
@@ -642,6 +661,7 @@ check_code_pattern() {
         
         # Get added lines with line numbers using our helper function
         local added_lines=$(get_added_lines_with_numbers "$file")
+           
         
         if [[ -z "$added_lines" ]]; then
             continue
