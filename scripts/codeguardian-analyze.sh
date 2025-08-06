@@ -103,32 +103,44 @@ get_changed_files() {
 }
 export -f get_changed_files
 
+
+
 get_added_files() {
     local base_ref=$(get_base_ref)
     
-    local added_files=""
-    
-    # Get files that don't exist in base but exist now
-    local all_current_files=$(git ls-files)
-    local base_files=$(git ls-tree -r "${base_ref}" --name-only 2>/dev/null || echo "")
-    
-    # Find files that exist now but not in base
-    added_files=$(comm -13 <(echo "$base_files" | sort) <(echo "$all_current_files" | sort) | grep -v '^$' || echo "")
-    
-    # Add untracked files
-    local untracked_files=$(get_untracked_files)
-    
-    # Combine and deduplicate
-    local all_added=$(printf "%s\n%s" "$added_files" "$untracked_files" | sort -u | grep -v '^$' || echo "")
-    
-    # Filter out files that don't currently exist
-    local existing_added=""
-    while IFS= read -r file; do
-        [[ -z "$file" ]] && continue
-        [[ -f "$file" ]] && existing_added="${existing_added}${file}"$'\n'
-    done <<< "$all_added"
-    
-    echo "$existing_added" | grep -v '^$' || echo ""
+    if is_ci_environment; then
+        # In CI, use the standard git diff approach
+        local added_files=""
+        
+        # Get committed added files
+        added_files=$(git diff --name-only --diff-filter=A "${base_ref}...HEAD" 2>/dev/null || echo "")
+        echo "$added_files"
+    else
+        # Locally, check actual current state
+        local added_files=""
+        
+        # Get files that don't exist in base but exist now
+        local all_current_files=$(git ls-files)
+        local base_files=$(git ls-tree -r "${base_ref}" --name-only 2>/dev/null || echo "")
+        
+        # Find files that exist now but not in base
+        added_files=$(comm -13 <(echo "$base_files" | sort) <(echo "$all_current_files" | sort) | grep -v '^$' || echo "")
+        
+        # Add untracked files
+        local untracked_files=$(get_untracked_files)
+        
+        # Combine and deduplicate
+        local all_added=$(printf "%s\n%s" "$added_files" "$untracked_files" | sort -u | grep -v '^$' || echo "")
+        
+        # Filter out files that don't currently exist
+        local existing_added=""
+        while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            [[ -f "$file" ]] && existing_added="${existing_added}${file}"$'\n'
+        done <<< "$all_added"
+        
+        echo "$existing_added" | grep -v '^$' || echo ""
+    fi
 }
 
 export -f get_added_files
@@ -165,6 +177,14 @@ is_untracked_file() {
 }
 export -f is_untracked_file
 
+# Add a function to detect if we're running in CI
+is_running_in_ci() {
+    # GitHub Actions sets GITHUB_ACTIONS=true
+    [[ "${GITHUB_ACTIONS:-false}" == "true" ]] || [[ "${CI:-false}" == "true" ]]
+}
+export -f is_running_in_ci
+
+
 # Get added lines for a file with line numbers
 get_added_lines_with_numbers() {
     local file="$1"
@@ -186,23 +206,16 @@ get_added_lines_with_numbers() {
         return 0
     fi
     
-    # For tracked files, we need to check the CURRENT state of the file
-    # compared to the base branch, not the historical diffs
+    local diff_output=""
     
-    # First, check if the file exists in the base branch
-    if ! git show "${base_ref}:${file}" >/dev/null 2>&1; then
-        # File doesn't exist in base branch, so all current lines are "added"
-        local line_num=1
-        while IFS= read -r line; do
-            echo "${line_num}:${line}"
-            ((line_num++))
-        done < "$file"
-        return 0
+    if is_running_in_ci; then
+        # In CI, analyze commits between base and HEAD
+        diff_output=$(git diff "${base_ref}...HEAD" -- "$file" 2>/dev/null || true)
+    else
+        # Locally, analyze the current working tree state vs base
+        # This shows what would be in the PR if you pushed right now
+        diff_output=$(git diff "${base_ref}" -- "$file" 2>/dev/null || true)
     fi
-    
-    # File exists in both base and current, so we need to diff
-    # Use git diff to compare base branch version with current working tree
-    local diff_output=$(git diff "${base_ref}" -- "$file" 2>/dev/null || true)
     
     if [[ -z "$diff_output" ]]; then
         return 0
@@ -248,16 +261,20 @@ get_added_lines_for_file() {
     # Check if this is an untracked file
     if is_untracked_file "$file"; then
         # For untracked files, all lines are "added"
-        # Add a '+' prefix to match the format of diff output
         while IFS= read -r line; do
             echo "+${line}"
         done < "$file"
         return 0
     fi
     
-    # Use git diff to compare base branch with current working tree
-    # This will show the actual current state, not historical changes
-    git diff "${base_ref}" -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' || echo ""
+    if is_running_in_ci; then
+        # In CI, get committed changes
+        local committed_lines=$(git diff "${base_ref}...HEAD" -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' || echo "")
+        echo "$committed_lines"
+    else
+        # Locally, get current state vs base
+        git diff "${base_ref}" -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' || echo ""
+    fi
 }
 export -f get_added_lines_for_file
 
