@@ -19,10 +19,10 @@ SCRIPT_ROOT="${SCRIPT_DIR}/.."
 REPO_ROOT="$(cd "${PROJECT_ROOT}/.." && pwd)"
 RULES_FILE="${RULES_FILE:-${PROJECT_ROOT}/rules.json}"
 CUSTOM_DIR="${CUSTOM_DIR:-${PROJECT_ROOT}/custom-checks}"
-OUTPUT_FILE="${OUTPUT_FILE:-${PROJECT_ROOT}/codeguardian
--results.json}"
+OUTPUT_FILE="${OUTPUT_FILE:-${PROJECT_ROOT}/codeguardian-results.json}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 VERBOSE="${VERBOSE:-false}"
+TARGET_BRANCH="${BASE_BRANCH}" 
 
 # Source utilities
 source "${SCRIPT_DIR}/lib/utils.sh"
@@ -36,6 +36,40 @@ errors=0
 warnings=0
 info=0
 results=()
+
+# Get the target branch (where we're merging to)
+get_target_branch() {
+    if [[ -n "${TARGET_BRANCH}" ]]; then
+        echo "${TARGET_BRANCH}"
+        return
+    fi
+    
+    # Try to detect from CI environment
+    if [[ -n "${GITHUB_BASE_REF:-}" ]]; then
+        echo "${GITHUB_BASE_REF}"
+        return
+    fi
+    
+    # Default to BASE_BRANCH
+    echo "${BASE_BRANCH}"
+}
+export -f get_target_branch
+
+# Get the source branch (what we're merging from)
+get_source_branch() {
+    # Try to get current branch
+    local current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    
+    # In CI, might need to use GITHUB_HEAD_REF
+    if [[ -z "$current_branch" || "$current_branch" == "HEAD" ]]; then
+        if [[ -n "${GITHUB_HEAD_REF:-}" ]]; then
+            current_branch="${GITHUB_HEAD_REF}"
+        fi
+    fi
+    
+    echo "$current_branch"
+}
+export -f get_source_branch
 
 # Helper function to get base ref with GitHub Actions support
 get_base_ref() {
@@ -103,12 +137,10 @@ get_changed_files() {
 }
 export -f get_changed_files
 
-
-
 get_added_files() {
     local base_ref=$(get_base_ref)
     
-    if is_ci_environment; then
+    if is_running_in_ci; then
         # In CI, use the standard git diff approach
         local added_files=""
         
@@ -142,7 +174,6 @@ get_added_files() {
         echo "$existing_added" | grep -v '^$' || echo ""
     fi
 }
-
 export -f get_added_files
 
 get_modified_files() {
@@ -183,7 +214,6 @@ is_running_in_ci() {
     [[ "${GITHUB_ACTIONS:-false}" == "true" ]] || [[ "${CI:-false}" == "true" ]]
 }
 export -f is_running_in_ci
-
 
 # Get added lines for a file with line numbers
 get_added_lines_with_numbers() {
@@ -277,6 +307,85 @@ get_added_lines_for_file() {
     fi
 }
 export -f get_added_lines_for_file
+
+# Check if rule should run for target branch
+should_run_rule_for_target() {
+    local rule_json=$1
+    local current_target=$(get_target_branch)
+    
+    # Get target_branches from rule
+    local target_branches=$(echo "$rule_json" | jq -r '.target_branches[]?' 2>/dev/null || echo "")
+    
+    # If no target_branches specified, rule runs for all branches
+    if [[ -z "$target_branches" ]]; then
+        return 0
+    fi
+    
+    # Check if current target matches any of the specified branches
+    while IFS= read -r target; do
+        [[ -z "$target" ]] && continue
+        
+        # Handle wildcards
+        if [[ "$target" == "*" ]]; then
+            return 0
+        fi
+        
+        # Exact match
+        if [[ "$current_target" == "$target" ]]; then
+            return 0
+        fi
+        
+        # Pattern match (e.g., release/* matches release/1.2.3)
+        if [[ "$current_target" == $target ]]; then
+            return 0
+        fi
+    done <<< "$target_branches"
+    
+    return 1
+}
+
+# Check branch naming rules
+check_branch_name() {
+    local rule_json=$1
+    
+    local rule_id=$(echo "$rule_json" | jq -r '.id')
+    local rule_name=$(echo "$rule_json" | jq -r '.name')
+    local severity=$(echo "$rule_json" | jq -r '.severity')
+    local message=$(echo "$rule_json" | jq -r '.message')
+    local target_branch=$(echo "$rule_json" | jq -r '.target_branch // "*"')
+    local allowed_patterns=$(echo "$rule_json" | jq -r '.allowed_patterns[]')
+    
+    log "INFO" "Checking branch name rule: $rule_name"
+    
+    local current_target=$(get_target_branch)
+    local source_branch=$(get_source_branch)
+    
+    # Check if this rule applies to the current target branch
+    if [[ "$target_branch" != "*" ]] && [[ "$current_target" != $target_branch ]]; then
+        log "INFO" "Rule does not apply to target branch: $current_target"
+        return 0
+    fi
+    
+    log "INFO" "Checking source branch: $source_branch against target: $current_target"
+    
+    # Check if source branch matches any allowed pattern
+    local matches=false
+    while IFS= read -r pattern; do
+        [[ -z "$pattern" ]] && continue
+        
+        if [[ "$source_branch" == $pattern ]]; then
+            matches=true
+            break
+        fi
+    done <<< "$allowed_patterns"
+    
+    if [[ "$matches" == "false" ]]; then
+        log "MATCH" "Branch name violation: $source_branch does not match allowed patterns for target $current_target"
+        local allowed_list=$(echo "$allowed_patterns" | tr '\n' ', ' | sed 's/,$//')
+        local detail="Source branch '$source_branch' does not match allowed patterns for merging to '$current_target'. Allowed patterns: $allowed_list"
+        add_result "$severity" "$rule_id" "$rule_name" "$message" "$detail" "BRANCH_NAME"
+    fi
+}
 
 # Check dependent file modification rules
 check_dependent_file() {
@@ -373,6 +482,7 @@ run_custom_checks() {
     # Export necessary variables and functions for custom scripts
     export PROJECT_ROOT
     export BASE_BRANCH
+    export TARGET_BRANCH
     export RULES_FILE
     export OUTPUT_FILE
     
@@ -402,6 +512,7 @@ init_results() {
   "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
   "branch": "$(git rev-parse --abbrev-ref HEAD)",
   "base_branch": "${BASE_BRANCH}",
+  "target_branch": "$(get_target_branch)",
   "commit": "$(git rev-parse HEAD)",
   "results": {
     "errors": [],
@@ -492,6 +603,7 @@ update_results() {
   "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
   "branch": "$(git rev-parse --abbrev-ref HEAD)",
   "base_branch": "${BASE_BRANCH}",
+  "target_branch": "$(get_target_branch)",
   "commit": "$(git rev-parse HEAD)",
   "results": {
     "errors": [],
@@ -825,9 +937,15 @@ process_rules() {
 }
 
 process_single_rule() {
-
     local rule_json=$1
     local changed_files=$2
+
+    # Check if rule should run for current target branch
+    if ! should_run_rule_for_target "$rule_json"; then
+        local rule_name=$(echo "$rule_json" | jq -r '.name')
+        log "INFO" "Skipping rule '$rule_name' - not applicable for target branch $(get_target_branch)"
+        return 0
+    fi
 
     local rule_type=$(echo "$rule_json" | jq -r '.type')
 
@@ -846,6 +964,9 @@ process_single_rule() {
             ;;
         dependent_file)
             check_dependent_file "$rule_json" "$changed_files"
+            ;;
+        branch_naming)
+            check_branch_name "$rule_json"
             ;;
         *)
             log "WARN" "Unknown rule type: $rule_type"
@@ -884,6 +1005,13 @@ print_summary() {
     echo "         CodeGuardian Analysis Summary         "
     echo "========================================="
     
+    local target_branch=$(get_target_branch)
+    local source_branch=$(get_source_branch)
+    
+    echo -e "${BLUE}Source Branch: ${source_branch}${NC}"
+    echo -e "${BLUE}Target Branch: ${target_branch}${NC}"
+    echo ""
+    
     if (( errors == 0 && warnings == 0 && info == 0 )); then
         echo -e "${GREEN}✅ All checks passed!${NC}"
     else
@@ -898,7 +1026,7 @@ print_summary() {
         fi
     fi
     
-     echo -e "${BLUE}📝 Analysis included uncommitted changes${NC}"
+    echo -e "${BLUE}📝 Analysis included uncommitted changes${NC}"
     local untracked_count=$(get_untracked_files | wc -l | tr -d ' ')
     if [[ "$untracked_count" -gt 0 ]]; then
         echo -e "${BLUE}📄 Analyzed $untracked_count untracked files${NC}"
@@ -973,6 +1101,10 @@ while [[ $# -gt 0 ]]; do
             BASE_BRANCH="$2"
             shift 2
             ;;
+        -t|--target)
+            TARGET_BRANCH="$2"
+            shift 2
+            ;;
         -v|--verbose)
             VERBOSE="true"
             shift
@@ -984,6 +1116,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -c, --custom-dir DIR     Path to custom checks directory (default: ./CodeGuardian/custom-checks)"
             echo "  -o, --output FILE        Output file for results (default: ./codeguardian-results.json)"
             echo "  -b, --base BRANCH        Base branch to compare against (default: main)"
+            echo "  -t, --target BRANCH      Target branch we're merging to"
             echo "  -v, --verbose            Enable verbose logging"
             echo "  -u, --include-uncommitted Include uncommitted changes in analysis"
             echo "  -h, --help               Show this help message"

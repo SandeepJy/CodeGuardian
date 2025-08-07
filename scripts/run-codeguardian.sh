@@ -15,7 +15,7 @@ SCRIPTS_FULL_PATH="${SCRIPTS_DIR}/scripts"
 LOCAL_MODE="${LOCAL_MODE:-true}"
 CUR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-
+BASE_BRANCH="${1:-main}"
 
 # Colors
 RED='\033[0;31m'
@@ -48,13 +48,13 @@ if [[ "${LOCAL_MODE}" == "true" ]]; then
 
         # Remove older releases
         echo -e "${BLUE}Cleaning up older CodeGuardian core releases...${NC}"
-        find "$CODEGUARDIAN_DIR" -maxdepth1 -type d -name "CodeGuardian-*" ! -name "${SCRIPTS_DIR##*/}" -exec rm -rf {} +
-        echo -e "${GREEN} Cleaned up older releases{NC}"
+        find "$CODEGUARDIAN_DIR" -maxdepth 1 -type d -name "CodeGuardian-*" ! -name "${SCRIPTS_DIR##*/}" -exec rm -rf {} +
+        echo -e "${GREEN} Cleaned up older releases${NC}"
 
         echo -e "${BLUE}Downloading CodeGuardian core scripts ${CODEGUARDIAN_VERSION}...${NC}"
 
         echo -r "${BLUE}Cloning CodeGuardian core scripts from tag ${CODEGUARDIAN_VERSION}...${NC}"
-        git clone --depth 1 --branch "$CODEGUARDIAN_VERSION" "$CODEGUARDIN_REPO" "$SCRIPTS_DIR" || {
+        git clone --depth 1 --branch "$CODEGUARDIAN_VERSION" "$CODEGUARDIAN_REPO" "$SCRIPTS_DIR" || {
             echo -e "${RED}Failed to clone CodeGuardian core scripts${NC}"
             exit 1
         }
@@ -77,7 +77,7 @@ echo -e "${BLUE}Running CodeGuardian analysis...${NC}"
 echo ""
 
 if [[ "${LOCAL_MODE}" == "true" ]]; then
-    "$SCRIPTS_FULL_PATH/run-codeguardian-local.sh"
+    "$SCRIPTS_FULL_PATH/run-codeguardian-local.sh" ${BASE_BRANCH}
 else
     # CI mode
     "${SCRIPTS_FULL_PATH}/codeguardian-analyze.sh" \
