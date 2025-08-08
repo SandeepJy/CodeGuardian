@@ -22,7 +22,6 @@ CUSTOM_DIR="${CUSTOM_DIR:-${PROJECT_ROOT}/custom-checks}"
 OUTPUT_FILE="${OUTPUT_FILE:-${PROJECT_ROOT}/codeguardian-results.json}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 VERBOSE="${VERBOSE:-false}"
-TARGET_BRANCH="${BASE_BRANCH}" 
 
 # Source utilities
 source "${SCRIPT_DIR}/lib/utils.sh"
@@ -39,8 +38,8 @@ results=()
 
 # Get the target branch (where we're merging to)
 get_target_branch() {
-    if [[ -n "${TARGET_BRANCH}" ]]; then
-        echo "${TARGET_BRANCH}"
+    if [[ -n "${BASE_BRANCH}" ]]; then
+        echo "${BASE_BRANCH}"
         return
     fi
     
@@ -74,15 +73,40 @@ export -f get_source_branch
 # Helper function to get base ref with GitHub Actions support
 get_base_ref() {
     local base_ref="${BASE_BRANCH}"
+
+    log "DEBUG" "Sandeep base ref is $BASE_BRANCH"
     
+    # If already has origin/ prefix, use as-is
     if [[ "$base_ref" == origin/* ]]; then
         echo "$base_ref"
         return
     fi
-
-    if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
-        base_ref="origin/${BASE_BRANCH}"
+    
+    # Always try to use remote branch for consistency
+    local remote_ref="origin/$base_ref"
+    
+    # Check if remote branch exists
+    if git rev-parse --verify "$remote_ref" >/dev/null 2>&1; then
+        echo "$remote_ref"
+        return
     fi
+    
+    # If remote doesn't exist, try to fetch it
+    log "INFO" "Remote branch $remote_ref not found, attempting to fetch..."
+    if git fetch origin "$base_ref:$base_ref" >/dev/null 2>&1; then
+        echo "$remote_ref"
+        return
+    fi
+    
+    # If fetch fails, try local branch as fallback
+    if git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+        log "WARN" "Using local branch $base_ref instead of remote"
+        echo "$base_ref"
+        return
+    fi
+    
+    # Last resort - return the original and let git show the error
+    log "ERROR" "Neither remote nor local branch found for $base_ref"
     echo "$base_ref"
 }
 export -f get_base_ref
@@ -118,22 +142,28 @@ get_changed_files() {
     
     local changed_files=""
     
-    # Get files changed between base branch and current HEAD
-    # Include uncommitted changes by comparing to working directory
-    changed_files=$(git diff --name-only "${base_ref}...HEAD" 2>/dev/null || echo "")
-    local uncommitted_files=$(git diff --name-only HEAD 2>/dev/null || echo "")
-    local untracked_files=$(get_untracked_files)
-    
-    # Combine and deduplicate
-    local all_files=$(printf "%s\n%s\n%s" "$changed_files" "$uncommitted_files" "$untracked_files" | sort -u | grep -v '^$' || echo "")
-    
-    # Filter out deleted files
-    local deleted_files=$(get_deleted_files)
-    if [[ -n "$deleted_files" ]]; then
-        all_files=$(comm -23 <(echo "$all_files" | sort) <(echo "$deleted_files" | sort) | grep -v '^$' || echo "")
+    if is_running_in_ci; then
+        # In CI, use three dots to get changes from merge base
+        changed_files=$(git diff --name-only "${base_ref}...HEAD" 2>/dev/null || echo "")
+    else
+        # Locally, use two dots to compare directly
+        # This gets all changes from base_ref to current working tree
+        changed_files=$(git diff --name-only "${base_ref}" 2>/dev/null || echo "")
+        
+        # Also get untracked files
+        local untracked_files=$(get_untracked_files)
+        
+        # Combine and deduplicate
+        local all_files=$(printf "%s\n%s" "$changed_files" "$untracked_files" | sort -u | grep -v '^$' || echo "")
+        
+        # Filter out deleted files
+        local deleted_files=$(get_deleted_files)
+        if [[ -n "$deleted_files" ]]; then
+            all_files=$(comm -23 <(echo "$all_files" | sort) <(echo "$deleted_files" | sort) | grep -v '^$' || echo "")
+        fi
+        
+        echo "$all_files"
     fi
-    
-    echo "$all_files"
 }
 export -f get_changed_files
 
@@ -352,7 +382,14 @@ check_branch_name() {
     local rule_name=$(echo "$rule_json" | jq -r '.name')
     local severity=$(echo "$rule_json" | jq -r '.severity')
     local message=$(echo "$rule_json" | jq -r '.message')
-    local target_branch=$(echo "$rule_json" | jq -r '.target_branch // "*"')
+    
+    # Support both old target_branch and new target_branches format
+    local target_branches=$(echo "$rule_json" | jq -r '.target_branches[]?' 2>/dev/null || echo "")
+    if [[ -z "$target_branches" ]]; then
+        # Fallback to old format
+        target_branches=$(echo "$rule_json" | jq -r '.target_branch // "*"')
+    fi
+    
     local allowed_patterns=$(echo "$rule_json" | jq -r '.allowed_patterns[]')
     
     log "INFO" "Checking branch name rule: $rule_name"
@@ -361,7 +398,29 @@ check_branch_name() {
     local source_branch=$(get_source_branch)
     
     # Check if this rule applies to the current target branch
-    if [[ "$target_branch" != "*" ]] && [[ "$current_target" != $target_branch ]]; then
+    local rule_applies=false
+    while IFS= read -r target_pattern; do
+        [[ -z "$target_pattern" ]] && continue
+        
+        if [[ "$target_pattern" == "*" ]]; then
+            rule_applies=true
+            break
+        fi
+        
+        # Exact match
+        if [[ "$current_target" == "$target_pattern" ]]; then
+            rule_applies=true
+            break
+        fi
+        
+        # Pattern match (e.g., release/* matches release/1.2.3)
+        if [[ "$current_target" == $target_pattern ]]; then
+            rule_applies=true
+            break
+        fi
+    done <<< "$target_branches"
+    
+    if [[ "$rule_applies" == "false" ]]; then
         log "INFO" "Rule does not apply to target branch: $current_target"
         return 0
     fi
@@ -373,6 +432,13 @@ check_branch_name() {
     while IFS= read -r pattern; do
         [[ -z "$pattern" ]] && continue
         
+        # Exact match
+        if [[ "$source_branch" == "$pattern" ]]; then
+            matches=true
+            break
+        fi
+        
+        # Pattern match (e.g., feature/* matches feature/my-branch)
         if [[ "$source_branch" == $pattern ]]; then
             matches=true
             break
@@ -482,7 +548,6 @@ run_custom_checks() {
     # Export necessary variables and functions for custom scripts
     export PROJECT_ROOT
     export BASE_BRANCH
-    export TARGET_BRANCH
     export RULES_FILE
     export OUTPUT_FILE
     
@@ -662,48 +727,63 @@ check_diff_size() {
     
     local base_ref=$(get_base_ref)
     
-    # Get diff stats
-    local diff_stats
-    # Include uncommitted changes in diff stats
+    # Find merge base for consistent comparison
+    local merge_base=$(git merge-base "$base_ref" HEAD 2>/dev/null || echo "$base_ref")
+    log "INFO" "Using merge base: $merge_base for comparison with $base_ref"
+    
+    # Get diff stats using consistent approach
+    local diff_stats=0
+    local comparison_target=""
+    
+    if is_running_in_ci; then
+        # In CI, compare merge-base to HEAD (committed changes only)
+        comparison_target="HEAD"
+    else
+        # Locally, compare merge-base to working tree (includes uncommitted changes)
+        comparison_target=""  # Empty means working tree
+    fi
+    
     case "$count_type" in
         "added")
-            local committed_added=$(git diff --numstat "${base_ref}...HEAD" | awk '{added += $1} END {print added+0}')
-            local uncommitted_added=$(git diff --numstat HEAD | awk '{added += $1} END {print added+0}')
-            # Count lines in untracked files
-            local untracked_lines=0
-            local untracked_files=$(get_untracked_files)
-            if [[ -n "$untracked_files" ]]; then
-                while IFS= read -r file; do
-                    [[ -z "$file" ]] && continue
-                    [[ -f "$file" ]] && untracked_lines=$((untracked_lines + $(wc -l < "$file" 2>/dev/null || echo 0)))
-                done <<< "$untracked_files"
+            diff_stats=$(git diff --numstat "$merge_base" $comparison_target | awk '{added += $1} END {print added+0}')
+            
+            # Add untracked files only in local mode
+            if ! is_running_in_ci; then
+                local untracked_lines=0
+                local untracked_files=$(get_untracked_files)
+                if [[ -n "$untracked_files" ]]; then
+                    while IFS= read -r file; do
+                        [[ -z "$file" ]] && continue
+                        [[ -f "$file" ]] && untracked_lines=$((untracked_lines + $(wc -l < "$file" 2>/dev/null || echo 0)))
+                    done <<< "$untracked_files"
+                fi
+                diff_stats=$((diff_stats + untracked_lines))
             fi
-            diff_stats=$((committed_added + uncommitted_added + untracked_lines))
             ;;
         "removed")
-            local committed_removed=$(git diff --numstat "${base_ref}...HEAD" | awk '{removed += $2} END {print removed+0}')
-            local uncommitted_removed=$(git diff --numstat HEAD | awk '{removed += $2} END {print removed+0}')
-            diff_stats=$((committed_removed + uncommitted_removed))
+            diff_stats=$(git diff --numstat "$merge_base" $comparison_target | awk '{removed += $2} END {print removed+0}')
             ;;
         "total"|*)
-            local committed_total=$(git diff --numstat "${base_ref}...HEAD" | awk '{added += $1; removed += $2} END {print added+removed+0}')
-            local uncommitted_total=$(git diff --numstat HEAD | awk '{added += $1; removed += $2} END {print added+removed+0}')
-            # Count lines in untracked files
-            local untracked_lines=0
-            local untracked_files=$(get_untracked_files)
-            if [[ -n "$untracked_files" ]]; then
-                while IFS= read -r file; do
-                    [[ -z "$file" ]] && continue
-                    [[ -f "$file" ]] && untracked_lines=$((untracked_lines + $(wc -l < "$file" 2>/dev/null || echo 0)))
-                done <<< "$untracked_files"
+            diff_stats=$(git diff --numstat "$merge_base" $comparison_target | awk '{added += $1; removed += $2} END {print added+removed+0}')
+            
+            # Add untracked files only in local mode
+            if ! is_running_in_ci; then
+                local untracked_lines=0
+                local untracked_files=$(get_untracked_files)
+                if [[ -n "$untracked_files" ]]; then
+                    while IFS= read -r file; do
+                        [[ -z "$file" ]] && continue
+                        [[ -f "$file" ]] && untracked_lines=$((untracked_lines + $(wc -l < "$file" 2>/dev/null || echo 0)))
+                    done <<< "$untracked_files"
+                fi
+                diff_stats=$((diff_stats + untracked_lines))
             fi
-            diff_stats=$((committed_total + uncommitted_total + untracked_lines))
             ;;
     esac
     
     local line_count=${diff_stats:-0}
     
-    log "INFO" "Diff stats: $line_count lines ($count_type)"
+    log "INFO" "Diff stats: $line_count lines ($count_type) from merge-base $merge_base"
     
     if (( line_count > max_lines )); then
         log "MATCH" "Diff size exceeds limit: $line_count > $max_lines"
@@ -711,8 +791,7 @@ check_diff_size() {
         add_result "$severity" "$rule_id" "$rule_name" "$message" "$detail" "DIFF_SIZE"
         
         # Add file breakdown for context
-        local file_breakdown
-        file_breakdown=$(git diff --numstat "${base_ref}...HEAD"; git diff --numstat HEAD | sort -nr | head -10)
+        local file_breakdown=$(git diff --numstat "$merge_base" $comparison_target | sort -nr | head -10)
         
         if [[ -n "$file_breakdown" ]]; then
             local breakdown_detail="Top files by line changes:\n$file_breakdown"
@@ -1099,10 +1178,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         -b|--base)
             BASE_BRANCH="$2"
-            shift 2
-            ;;
-        -t|--target)
-            TARGET_BRANCH="$2"
             shift 2
             ;;
         -v|--verbose)
