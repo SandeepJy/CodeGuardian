@@ -143,7 +143,7 @@ get_changed_files() {
     if is_running_in_ci; then
         # In CI, use three dots to get changes from merge base
         changed_files=$(git diff --name-only "${base_ref}...HEAD" 2>/dev/null || echo "")
-        log "DEBUG" "Sandeep: in CI changed files $changed_files"
+        echo "$changed_files"
     else
         # Locally, use two dots to compare directly
         # This gets all changes from base_ref to current working tree
