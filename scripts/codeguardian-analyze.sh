@@ -121,16 +121,18 @@ get_deleted_files() {
     
     local deleted_files=""
     
-    # Get committed deleted files
-    deleted_files=$(git diff --name-only --diff-filter=D "${base_ref}...HEAD" 2>/dev/null || echo "")
-    # Get uncommitted deleted files (staged)
-    local staged_deleted=$(git diff --name-only --diff-filter=D --cached 2>/dev/null || echo "")
-    # Get uncommitted deleted files (unstaged)
-    local unstaged_deleted=$(git diff --name-only --diff-filter=D HEAD 2>/dev/null || echo "")
+    if is_running_in_ci; then
+        # Get committed deleted files in CI
+        deleted_files=$(git diff --name-only --diff-filter=D "${base_ref}...HEAD" 2>/dev/null || echo "")
+    else
+        # Locally, combine committed deletions unique to the branch and uncommitted deletions
+        local committed_deleted=$(git diff --name-only --diff-filter=D "${base_ref}...HEAD" 2>/dev/null || echo "")
+        local uncommitted_deleted=$(git diff --name-only --diff-filter=D HEAD 2>/dev/null || echo "")
+        local all_deleted=$(printf "%s\n%s" "$committed_deleted" "$uncommitted_deleted" | sort -u | grep -v '^$' || echo "")
+        deleted_files="$all_deleted"
+    fi
     
-    # Combine and deduplicate
-    local all_deleted=$(printf "%s\n%s\n%s" "$deleted_files" "$staged_deleted" "$unstaged_deleted" | sort -u | grep -v '^$' || echo "")
-    echo "$all_deleted"
+    echo "$deleted_files"
 }
 export -f get_deleted_files
 
@@ -145,22 +147,15 @@ get_changed_files() {
         changed_files=$(git diff --name-only "${base_ref}...HEAD" 2>/dev/null || echo "")
         echo "$changed_files"
     else
-        # Locally, use two dots to compare directly
-        # This gets all changes from base_ref to current working tree
-        changed_files=$(git diff --name-only "${base_ref}" 2>/dev/null || echo "")
-        
-        # Also get untracked files
+        # Locally, combine committed changes unique to the branch, uncommitted changes, and untracked files.
+        local committed_changes=$(git diff --name-only "${base_ref}...HEAD" 2>/dev/null || echo "")
+        local uncommitted_changes=$(git diff --name-only HEAD 2>/dev/null || echo "")
         local untracked_files=$(get_untracked_files)
         
-        # Combine and deduplicate
-        local all_files=$(printf "%s\n%s" "$changed_files" "$untracked_files" | sort -u | grep -v '^$' || echo "")
+        # Combine and deduplicate all sources of changes
+        local all_files=$(printf "%s\n%s\n%s" "$committed_changes" "$uncommitted_changes" "$untracked_files" | sort -u | grep -v '^$' || echo "")
         
-        # Filter out deleted files
-        local deleted_files=$(get_deleted_files)
-        if [[ -n "$deleted_files" ]]; then
-            all_files=$(comm -23 <(echo "$all_files" | sort) <(echo "$deleted_files" | sort) | grep -v '^$' || echo "")
-        fi
-        
+        log "DEBUG" "Changed files (local): $all_files"
         echo "$all_files"
     fi
 }
@@ -177,23 +172,14 @@ get_added_files() {
         added_files=$(git diff --name-only --diff-filter=A "${base_ref}...HEAD" 2>/dev/null || echo "")
         echo "$added_files"
     else
-        # Locally, check actual current state
-        local added_files=""
-        
-        # Get files that don't exist in base but exist now
-        local all_current_files=$(git ls-files)
-        local base_files=$(git ls-tree -r "${base_ref}" --name-only 2>/dev/null || echo "")
-        
-        # Find files that exist now but not in base
-        added_files=$(comm -13 <(echo "$base_files" | sort) <(echo "$all_current_files" | sort) | grep -v '^$' || echo "")
-        
-        # Add untracked files
+        # Locally, combine committed additions unique to the branch, uncommitted additions, and untracked files.
+        local committed_added=$(git diff --name-only --diff-filter=A "${base_ref}...HEAD" 2>/dev/null || echo "")
+        local uncommitted_added=$(git diff --name-only --diff-filter=A HEAD 2>/dev/null || echo "")
         local untracked_files=$(get_untracked_files)
         
-        # Combine and deduplicate
-        local all_added=$(printf "%s\n%s" "$added_files" "$untracked_files" | sort -u | grep -v '^$' || echo "")
+        local all_added=$(printf "%s\n%s\n%s" "$committed_added" "$uncommitted_added" "$untracked_files" | sort -u | grep -v '^$' || echo "")
         
-        # Filter out files that don't currently exist
+        # Filter out files that don't currently exist (untracked might be deleted later)
         local existing_added=""
         while IFS= read -r file; do
             [[ -z "$file" ]] && continue
@@ -210,15 +196,18 @@ get_modified_files() {
     
     local modified_files=""
     
-    # Get committed modified files
-    modified_files=$(git diff --name-only --diff-filter=M "${base_ref}...HEAD" 2>/dev/null || echo "")
-    # Get uncommitted modified files
-    local uncommitted_modified=$(git diff --name-only --diff-filter=M HEAD 2>/dev/null || echo "")
-    local staged_modified=$(git diff --name-only --diff-filter=M --cached 2>/dev/null || echo "")
+    if is_running_in_ci; then
+        # In CI, get committed modified files relative to merge base
+        modified_files=$(git diff --name-only --diff-filter=M "${base_ref}...HEAD" 2>/dev/null || echo "")
+    else
+        # Locally, combine committed modifications unique to the branch and uncommitted modifications
+        local committed_modified=$(git diff --name-only --diff-filter=M "${base_ref}...HEAD" 2>/dev/null || echo "")
+        local uncommitted_modified=$(git diff --name-only --diff-filter=M HEAD 2>/dev/null || echo "")
+        local all_modified=$(printf "%s\n%s" "$committed_modified" "$uncommitted_modified" | sort -u | grep -v '^$' || echo "")
+        modified_files="$all_modified"
+    fi
     
-    # Combine and deduplicate
-    local all_modified=$(printf "%s\n%s\n%s" "$modified_files" "$uncommitted_modified" "$staged_modified" | sort -u | grep -v '^$' || echo "")
-    echo "$all_modified"
+    echo "$modified_files"
 }
 export -f get_modified_files
 
@@ -271,9 +260,9 @@ get_added_lines_with_numbers() {
         # In CI, analyze commits between base and HEAD
         diff_output=$(git diff "${base_ref}...HEAD" -- "$file" 2>/dev/null || true)
     else
-        # Locally, analyze the current working tree state vs base
-        # This shows what would be in the PR if you pushed right now
-        diff_output=$(git diff "${base_ref}" -- "$file" 2>/dev/null || true)
+        # Locally, analyze the current working tree state vs merge base
+        local merge_base=$(git merge-base "$base_ref" HEAD 2>/dev/null || echo "$base_ref")
+        diff_output=$(git diff "${merge_base}" -- "$file" 2>/dev/null || true)
     fi
     
     if [[ -z "$diff_output" ]]; then
@@ -331,8 +320,9 @@ get_added_lines_for_file() {
         local committed_lines=$(git diff "${base_ref}...HEAD" -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' || echo "")
         echo "$committed_lines"
     else
-        # Locally, get current state vs base
-        git diff "${base_ref}" -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' || echo ""
+        # Locally, get current state vs base (includes uncommitted changes)
+        local merge_base=$(git merge-base "$base_ref" HEAD 2>/dev/null || echo "$base_ref")
+        git diff "${merge_base}" -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' || echo ""
     fi
 }
 export -f get_added_lines_for_file
@@ -868,6 +858,8 @@ check_code_pattern() {
         
         # Get added lines with line numbers using our helper function
         local added_lines=$(get_added_lines_with_numbers "$file")
+
+        log "DEBUG" "Added lines: $added_lines for file: $file"
            
         
         if [[ -z "$added_lines" ]]; then

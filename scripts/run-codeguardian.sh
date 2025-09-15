@@ -71,6 +71,14 @@ fi
 chmod +x "$SCRIPTS_FULL_PATH"/*.sh
 chmod +x "$SCRIPTS_FULL_PATH"/lib/*.sh 2>/dev/null || true
 
+# Fetch the base branch to ensure up-to-date comparison
+echo -e "${BLUE}Fetching base branch '${BASE_BRANCH}' to ensure up-to-date comparison...${NC}"
+git fetch origin "${BASE_BRANCH}" || {
+    echo -e "${RED}Failed to fetch base branch '${BASE_BRANCH}'${NC}"
+    exit 1
+}
+echo -e "${GREEN}Base branch fetched successfully.${NC}"
+
 # Run CodeGuardian analysis
 echo ""
 echo -e "${BLUE}Running CodeGuardian analysis...${NC}"
